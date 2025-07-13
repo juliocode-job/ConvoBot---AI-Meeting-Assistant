@@ -1,44 +1,59 @@
-# ingest_memory.py
+# ingest_memory.py (Final Corrected Version)
 import os
 import chromadb
-import openai
+from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# --- Configuration ---
+# This ensures the database is saved in your project folder
+DB_PATH = "./chroma_db" 
+COLLECTION_NAME = "meeting_transcripts"
+TRANSCRIPT_FILE = "project_phoenix_transcript.txt" # Your transcript file
+
+# --- Main Ingestion Logic ---
+print("Starting persistent memory ingestion...")
+
+# 1. Load environment variables (for the OPENAI_API_KEY)
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
-# This now creates a persistent database on your disk
-db_client = chromadb.PersistentClient(path="chroma_db") 
+if not api_key:
+    print("[FATAL ERROR] OPENAI_API_KEY not found in .env file.")
+    print("Please make sure your .env file is set up correctly.")
+else:
+    try:
+        # 2. Define the embedding function using OpenAI
+        # This forces it to use the same model as your main.py
+        openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+            api_key=api_key,
+            model_name="text-embedding-3-small"
+        )
 
-collection = db_client.get_or_create_collection(name="meeting_transcripts")
-ai_client = openai.OpenAI()
+        # 3. Initialize a PERSISTENT client
+        client = chromadb.PersistentClient(path=DB_PATH)
 
-sample_transcript = """
-John: Okay team, let's kick off the Q3 planning meeting. First on the agenda is the new marketing campaign, "Project Sunrise." Maria, what's the latest?
-Maria: Thanks, John. The creative team has finalized the visuals, and they look fantastic. We're on track for a launch on August 1st. However, the budget for the social media ads is tight. We need an additional $5,000 to ensure we get the reach we need.
-John: An extra $5,000... I see. Can we pull that from the Q2 surplus?
-Sarah: I checked this morning. Yes, we can reallocate the funds from the Q2 general budget surplus. I'll need formal approval to do that.
-John: Okay, consider it approved. Sarah, please process that reallocation. Maria, you've got your extra budget. Let's make it count.
-Maria: Great, thank you! That's all for Project Sunrise.
-John: Perfect. Next up, the new support chatbot initiative. Peter, how are we doing?
-Peter: We've hit a snag. The user testing feedback shows the bot fails to understand complex queries about billing. It's causing a lot of frustration. We need to retrain the model with a better dataset.
-John: A better dataset... Where do we get that?
-Peter: Sarah's team has historical support tickets. We could use those, but they need to be anonymized first to protect customer privacy. It's a significant data-cleaning task.
-John: Understood. Action item for Sarah: provide Peter's team with an anonymized dataset of billing-related support tickets by the end of next week. Peter, your action item is to develop a retraining plan once you have the data.
-Sarah: Understood. I'll get on it.
-Peter: Sounds good.
-John: Excellent. That's all for today. Great meeting, everyone.
-"""
+        # 4. Get or create the collection with the correct embedding function
+        collection = client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=openai_ef
+        )
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-chunks = text_splitter.split_text(sample_transcript)
-print(f"Transcript split into {len(chunks)} chunks.")
+        # 5. Read and chunk the transcript
+        with open(TRANSCRIPT_FILE, 'r') as f:
+            transcript = f.read()
+        
+        # Simple chunking
+        chunks = [transcript[i:i+500] for i in range(0, len(transcript), 500)]
+        print(f"Transcript split into {len(chunks)} chunks.")
 
-for i, chunk in enumerate(chunks):
-    response = ai_client.embeddings.create(model="text-embedding-3-small", input=chunk)
-    embedding = response.data[0].embedding
-    collection.add(ids=[f"chunk_{i+1}"], embeddings=[embedding], documents=[chunk])
-    print(f"✅ Added chunk {i+1} to the database.")
+        # 6. Add chunks to the database
+        ids = [f"chunk_{i+1}" for i in range(len(chunks))]
+        collection.add(documents=chunks, ids=ids)
 
-print("\n🎉 Persistent memory ingestion complete!")
+        print("\nPersistent memory ingestion complete!")
+        print(f"Added {len(chunks)} chunk(s) to the database using the OpenAI embedding model.")
+
+    except FileNotFoundError:
+        print(f"[ERROR] The transcript file was not found: {TRANSCRIPT_FILE}")
+    except Exception as e:
+        print(f"[ERROR] An error occurred during ingestion: {e}")
